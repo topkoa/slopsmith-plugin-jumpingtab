@@ -209,18 +209,11 @@
         audioEl = null;
     }
 
-    // ── Renderer (static parts only for this task) ───────────
-    function drawStaticBackground() {
-        if (!ctx || !canvas) return;
-        const W = canvas.width, H = canvas.height;
-        const nStrings = (state.tuning && state.tuning.length === 4) ? 4 : 6;
-        const colors = colorsFor(nStrings);
-
-        // Background
+    // ── Renderer ─────────────────────────────────────────────
+    function drawBackground(W, H, nStrings, colors) {
         ctx.fillStyle = '#0f1420';
         ctx.fillRect(0, 0, W, H);
 
-        // String lines
         ctx.strokeStyle = '#3a4358';
         ctx.lineWidth = 1;
         for (let s = 0; s < nStrings; s++) {
@@ -231,16 +224,15 @@
             ctx.stroke();
         }
 
-        // String labels on the left gutter
         ctx.font = 'bold 11px monospace';
         ctx.textBaseline = 'middle';
+        ctx.textAlign = 'left';
         const labels = nStrings === 4 ? ['G','D','A','E'] : ['e','B','G','D','A','E'];
         for (let s = 0; s < nStrings; s++) {
             ctx.fillStyle = colors[s];
             ctx.fillText(labels[s], 6, stringY(s, H, nStrings));
         }
 
-        // Hit line with glow
         const hitX = W * HIT_LINE_FRAC;
         ctx.save();
         ctx.shadowColor = '#6ee7ff';
@@ -254,6 +246,42 @@
         ctx.restore();
     }
 
+    function drawNotes(W, H, nStrings, colors, now) {
+        if (!state.ready || !state.notes.length) return;
+        const { start, end } = binaryVisibleRange(state.notes, now);
+
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = 'bold 11px monospace';
+
+        for (let i = start; i < end; i++) {
+            const n = state.notes[i];
+            if (n.s < 0 || n.s >= nStrings) continue;
+            const x = timeX(n.t, now, W);
+            const y = stringY(n.s, H, nStrings);
+            const color = colors[n.s];
+
+            ctx.save();
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.arc(x, y, 12, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#0f1420';
+            ctx.fillText(String(n.f), x, y + 0.5);
+            ctx.restore();
+        }
+    }
+
+    function drawFrame(now) {
+        if (!ctx || !canvas) return;
+        const W = canvas.width, H = canvas.height;
+        const nStrings = (state.tuning && state.tuning.length === 4) ? 4 : 6;
+        const colors = colorsFor(nStrings);
+
+        drawBackground(W, H, nStrings, colors);
+        drawNotes(W, H, nStrings, colors, now);
+    }
+
     // ── Toggle + button ──────────────────────────────────────
     function toggle() {
         if (!active) {
@@ -263,7 +291,7 @@
             }
             if (!mountCanvas()) return;
             active = true;
-            drawStaticBackground(); // will become drawFrame in later tasks
+            drawFrame(0);
             const b = document.getElementById('btn-jt');
             if (b) b.className = 'px-3 py-1.5 bg-cyan-900/50 rounded-lg text-xs text-cyan-300 transition';
         } else {
