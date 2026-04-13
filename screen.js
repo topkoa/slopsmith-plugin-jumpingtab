@@ -114,9 +114,33 @@
         tuning: null,
         notes: [],
         arcs: [],
+        techArcs: [],
+        beats: [],
         ready: false,
         ws: null,
     };
+
+    // Build "technique arcs" — curves between two notes on the same string
+    // where the second note has a hammer-on / pull-off / slide flag set.
+    // Walks the time-sorted notes array once; for each note with a technique
+    // flag, finds the most recent prior note on the same string and emits
+    // a pair. Used by drawTechniqueArcs.
+    function buildTechniqueArcs(notes) {
+        const out = [];
+        const lastOnString = new Map();  // string index → last note object
+        for (const n of notes) {
+            const prev = lastOnString.get(n.s);
+            if (prev) {
+                let type = null;
+                if (n.ho) type = 'h';
+                else if (n.po) type = 'p';
+                else if (n.sl && n.sl > 0) type = 's';
+                if (type) out.push({ t0: prev.t, t1: n.t, s: n.s, type, f0: prev.f, f1: n.f });
+            }
+            lastOnString.set(n.s, n);
+        }
+        return out;
+    }
 
     function connect(filename, arrangementIdx) {
         return new Promise((resolve, reject) => {
@@ -126,6 +150,8 @@
             state.tuning = null;
             state.notes = [];
             state.arcs = [];
+            state.techArcs = [];
+            state.beats = [];
             state.ready = false;
 
             const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -142,11 +168,13 @@
                 if (state.ready) return;
                 state.notes.sort((a, b) => a.t - b.t);
                 state.arcs = buildTrajectories(state.notes);
+                state.techArcs = buildTechniqueArcs(state.notes);
                 state.ready = true;
                 console.log('[jumpingtab] ready —',
                     singleNotesCount, 'single notes +',
                     chordNotesCount, 'chord notes =',
-                    state.notes.length, 'total');
+                    state.notes.length, 'total,',
+                    state.techArcs.length, 'technique arcs');
                 resolve(state);
             };
 
@@ -170,7 +198,9 @@
                 } else if (msg.type === 'chords') {
                     // Chord events — each chord has its own time and a list of
                     // notes {s, f, sus, ...}. Expand into individual notes by
-                    // promoting the chord's time onto every note.
+                    // promoting the chord's time onto every note. Keep the
+                    // technique flags (ho, po, sl) so drawTechniqueArcs can
+                    // find them.
                     for (const c of msg.data) {
                         for (const cn of c.notes) {
                             state.notes.push({
@@ -178,10 +208,16 @@
                                 s: cn.s,
                                 f: cn.f,
                                 sus: cn.sus || 0,
+                                ho: cn.ho || 0,
+                                po: cn.po || 0,
+                                sl: cn.sl || -1,
                             });
                             chordNotesCount++;
                         }
                     }
+                } else if (msg.type === 'beats') {
+                    // Store beats for measure-bar rendering in drawBackground
+                    state.beats = msg.data || [];
                 } else if (msg.type === 'ready') {
                     // Server has finished streaming notes + chords
                     finalize();
@@ -284,38 +320,74 @@
     }
 
     // ── Renderer ─────────────────────────────────────────────
-    function drawBackground(W, H, nStrings, colors) {
-        ctx.fillStyle = '#0f1420';
+    function drawBackground(W, H, nStrings, colors, now) {
+        // Base fill
+        ctx.fillStyle = '#0b1020';
         ctx.fillRect(0, 0, W, H);
 
-        ctx.strokeStyle = '#3a4358';
-        ctx.lineWidth = 1;
+        // Subtle horizontal gradient to add depth
+        const grad = ctx.createLinearGradient(0, 0, 0, H);
+        grad.addColorStop(0, 'rgba(110, 231, 255, 0.04)');
+        grad.addColorStop(0.5, 'rgba(0, 0, 0, 0)');
+        grad.addColorStop(1, 'rgba(110, 231, 255, 0.04)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, W, H);
+
+        // Beat / measure lines — vertical ticks keyed off state.beats
+        if (state.beats && state.beats.length) {
+            const lo = now - BEHIND;
+            const hi = now + AHEAD;
+            for (const b of state.beats) {
+                if (b.time < lo || b.time > hi) continue;
+                const bx = timeX(b.time, now, W);
+                const isMeasure = b.measure != null && b.measure >= 0;
+                ctx.save();
+                ctx.strokeStyle = isMeasure ? 'rgba(200, 210, 230, 0.22)' : 'rgba(120, 130, 160, 0.12)';
+                ctx.lineWidth = isMeasure ? 1.5 : 1;
+                ctx.beginPath();
+                ctx.moveTo(bx, 6);
+                ctx.lineTo(bx, H - 6);
+                ctx.stroke();
+                ctx.restore();
+            }
+        }
+
+        // String lines — brighter than before, with per-string tint
+        ctx.lineWidth = 1.5;
         for (let s = 0; s < nStrings; s++) {
             const y = yFor(s, H, nStrings);
+            ctx.strokeStyle = colors[s] + '55';  // semi-transparent string color
             ctx.beginPath();
             ctx.moveTo(0, y);
             ctx.lineTo(W, y);
             ctx.stroke();
         }
 
-        ctx.font = 'bold 11px monospace';
+        // String labels on the left gutter with a dark pill behind them
+        ctx.font = 'bold 12px monospace';
         ctx.textBaseline = 'middle';
-        ctx.textAlign = 'left';
+        ctx.textAlign = 'center';
         const labels = nStrings === 4 ? ['G','D','A','E'] : ['e','B','G','D','A','E'];
         for (let s = 0; s < nStrings; s++) {
+            const y = yFor(s, H, nStrings);
+            ctx.fillStyle = 'rgba(15, 20, 32, 0.85)';
+            ctx.beginPath();
+            ctx.arc(14, y, 9, 0, Math.PI * 2);
+            ctx.fill();
             ctx.fillStyle = colors[s];
-            ctx.fillText(labels[s], 6, yFor(s, H, nStrings));
+            ctx.fillText(labels[s], 14, y + 0.5);
         }
 
+        // Hit line — brighter, thicker, with a soft halo
         const hitX = W * HIT_LINE_FRAC;
         ctx.save();
         ctx.shadowColor = '#6ee7ff';
-        ctx.shadowBlur = 16;
-        ctx.strokeStyle = '#6ee7ff';
-        ctx.lineWidth = 2;
+        ctx.shadowBlur = 22;
+        ctx.strokeStyle = '#a6f0ff';
+        ctx.lineWidth = 3;
         ctx.beginPath();
-        ctx.moveTo(hitX, 8);
-        ctx.lineTo(hitX, H - 8);
+        ctx.moveTo(hitX, 6);
+        ctx.lineTo(hitX, H - 6);
         ctx.stroke();
         ctx.restore();
     }
@@ -365,9 +437,9 @@
 
         ctx.save();
         ctx.strokeStyle = '#6ee7ff';
-        ctx.globalAlpha = 0.55;
+        ctx.globalAlpha = 0.7;
         ctx.lineWidth = 2;
-        ctx.setLineDash([4, 4]);
+        ctx.setLineDash([5, 4]);
 
         for (const arc of state.arcs) {
             if (arc.t1 < lo || arc.t0 > hi) continue;
@@ -382,6 +454,54 @@
             ctx.moveTo(x0, y0);
             ctx.quadraticCurveTo(cx, cy, x1, y1);
             ctx.stroke();
+        }
+
+        ctx.restore();
+    }
+
+    // Technique arcs — curves above the notes on the same string for
+    // hammer-on (h), pull-off (p), or slide (s). These sit above the note
+    // row as a solid curve with a small letter label, mirroring standard
+    // tab notation.
+    function drawTechniqueArcs(W, H, nStrings, colors, now) {
+        if (!state.ready || !state.techArcs || !state.techArcs.length) return;
+        const lo = now - BEHIND;
+        const hi = now + AHEAD;
+
+        ctx.save();
+        ctx.lineWidth = 1.8;
+        ctx.lineCap = 'round';
+        ctx.font = 'bold 10px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        for (const a of state.techArcs) {
+            if (a.t1 < lo || a.t0 > hi) continue;
+            if (a.s < 0 || a.s >= nStrings) continue;
+            const x0 = timeX(a.t0, now, W);
+            const x1 = timeX(a.t1, now, W);
+            if (x1 - x0 < 6) continue;  // too close to be legible
+            const y = yFor(a.s, H, nStrings);
+            // Curve sits ~18px above the note row
+            const lift = 20;
+            const cx = (x0 + x1) / 2;
+            const cy = y - lift;
+
+            // Color codes: hammer-on cyan-ish, pull-off warm, slide white
+            const color = a.type === 'h' ? '#ffc86b'
+                        : a.type === 'p' ? '#ff8ab6'
+                        : '#ffffff';
+            ctx.strokeStyle = color;
+            ctx.globalAlpha = 0.85;
+            ctx.beginPath();
+            ctx.moveTo(x0, y - 4);
+            ctx.quadraticCurveTo(cx, cy, x1, y - 4);
+            ctx.stroke();
+
+            // Letter label centered above the curve
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = color;
+            ctx.fillText(a.type, cx, cy + 1);
         }
 
         ctx.restore();
@@ -457,7 +577,9 @@
 
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.font = 'bold 11px monospace';
+        ctx.font = 'bold 13px "SF Mono", Menlo, monospace';
+
+        const R = 14;  // fret-circle radius (was 12)
 
         for (let i = start; i < end; i++) {
             const n = state.notes[i];
@@ -476,12 +598,26 @@
 
             ctx.save();
             ctx.globalAlpha = alpha;
+
+            // Soft glow halo
+            ctx.shadowColor = color;
+            ctx.shadowBlur = 10;
             ctx.fillStyle = color;
             ctx.beginPath();
-            ctx.arc(x, y, 12, 0, Math.PI * 2);
+            ctx.arc(x, y, R, 0, Math.PI * 2);
             ctx.fill();
-            ctx.fillStyle = '#0f1420';
-            ctx.fillText(String(n.f), x, y + 0.5);
+
+            // Crisp outline (no shadow on stroke)
+            ctx.shadowBlur = 0;
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+            ctx.beginPath();
+            ctx.arc(x, y, R, 0, Math.PI * 2);
+            ctx.stroke();
+
+            // Fret number — black on colored fill for contrast
+            ctx.fillStyle = '#0a0f1c';
+            ctx.fillText(String(n.f), x, y + 1);
             ctx.restore();
         }
     }
@@ -496,9 +632,10 @@
         const nStrings = (state.tuning && state.tuning.length === 4) ? 4 : 6;
         const colors = colorsFor(nStrings);
 
-        drawBackground(W, H, nStrings, colors);
+        drawBackground(W, H, nStrings, colors, now);
         drawSustains(W, H, nStrings, colors, now);
         drawArcs(W, H, nStrings, colors, now);
+        drawTechniqueArcs(W, H, nStrings, colors, now);
         drawNotes(W, H, nStrings, colors, now);
         drawBall(W, H, nStrings, colors, now);
     }
@@ -589,6 +726,27 @@
             if (state.ws) { try { state.ws.close(); } catch (e) {} state.ws = null; }
         }
         if (typeof _origShow === 'function') _origShow(id);
+    };
+
+    // Wrap changeArrangement so switching Lead / Rhythm / Bass in the
+    // player dropdown re-runs our connect() with the new arrangement
+    // index. The ws builds a fresh note/arc/beat set for the new
+    // arrangement; if the tab view is currently active, we redraw from
+    // whatever the new state is.
+    const _origChangeArr = window.changeArrangement;
+    window.changeArrangement = function (index) {
+        if (typeof _origChangeArr === 'function') _origChangeArr(index);
+        if (!state.filename) return;
+        const btn = document.getElementById('btn-jt');
+        if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; btn.title = 'Loading…'; }
+        connect(state.filename, parseInt(index, 10))
+            .then(() => {
+                if (btn) { btn.disabled = false; btn.style.opacity = ''; btn.title = 'Toggle Yousician-style jumping tab view'; }
+            })
+            .catch((e) => {
+                console.warn('[jumpingtab] arrangement switch failed:', e.message);
+                if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; btn.title = 'Jumping Tab unavailable: ' + e.message; }
+            });
     };
 
     console.log('[jumpingtab] plugin loaded');
