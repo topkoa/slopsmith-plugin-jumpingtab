@@ -314,6 +314,42 @@
         ctx.restore();
     }
 
+    function findActiveArc(arcs, now) {
+        // Linear scan is fine — arcs.length is in the hundreds, this is 60fps-safe.
+        // Return the arc whose [t0, t1] contains now, or the most-recent past arc
+        // if we're between arcs (rest).
+        let best = null;
+        for (const a of arcs) {
+            if (a.t0 <= now && now <= a.t1) return a;
+            if (a.t1 < now && (!best || a.t1 > best.t1)) best = a;
+        }
+        return best;
+    }
+
+    function drawBall(W, H, nStrings, colors, now) {
+        if (!state.ready || !state.arcs.length) return;
+        const arc = findActiveArc(state.arcs, now);
+        if (!arc) return;
+
+        const x0 = timeX(arc.t0, now, W);
+        const y0 = stringY(arc.s0, H, nStrings);
+        const x1 = timeX(arc.t1, now, W);
+        const y1 = stringY(arc.s1, H, nStrings);
+        const { cx, cy } = arcControlPoint(x0, y0, x1, y1);
+
+        const u = Math.max(0, Math.min(1, (now - arc.t0) / Math.max(0.0001, arc.t1 - arc.t0)));
+        const p = bezierPoint(x0, y0, cx, cy, x1, y1, u);
+
+        ctx.save();
+        ctx.fillStyle = '#ffffff';
+        ctx.shadowColor = '#6ee7ff';
+        ctx.shadowBlur = 14;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+    }
+
     function drawNotes(W, H, nStrings, colors, now) {
         if (!state.ready || !state.notes.length) return;
         const { start, end } = binaryVisibleRange(state.notes, now);
@@ -359,6 +395,7 @@
         drawSustains(W, H, nStrings, colors, now);
         drawArcs(W, H, nStrings, colors, now);
         drawNotes(W, H, nStrings, colors, now);
+        drawBall(W, H, nStrings, colors, now);
     }
 
     function tick() {
