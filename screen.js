@@ -115,18 +115,22 @@
         notes: [],
         arcs: [],
         techArcs: [],
+        techPaired: new Set(),
         beats: [],
         ready: false,
         ws: null,
     };
 
-    // Build "technique arcs" — curves between two notes on the same string
-    // where the second note has a hammer-on / pull-off / slide flag set.
-    // Walks the time-sorted notes array once; for each note with a technique
+    // Build "technique arcs" — pairs of two notes on the same string where
+    // the second note has a hammer-on / pull-off / slide flag set. Walks
+    // the time-sorted notes array once; for each note with a technique
     // flag, finds the most recent prior note on the same string and emits
-    // a pair. Used by drawTechniqueArcs.
+    // a pair. Returns {arcs, paired} where `paired` is a Set of note
+    // references that belong to any pair — used by drawNotes to skip
+    // them (drawTechniquePairs renders them as a fused capsule instead).
     function buildTechniqueArcs(notes) {
-        const out = [];
+        const arcs = [];
+        const paired = new Set();
         const lastOnString = new Map();  // string index → last note object
         for (const n of notes) {
             const prev = lastOnString.get(n.s);
@@ -135,11 +139,15 @@
                 if (n.ho) type = 'h';
                 else if (n.po) type = 'p';
                 else if (n.sl && n.sl > 0) type = 's';
-                if (type) out.push({ t0: prev.t, t1: n.t, s: n.s, type, f0: prev.f, f1: n.f });
+                if (type) {
+                    arcs.push({ t0: prev.t, t1: n.t, s: n.s, type, f0: prev.f, f1: n.f });
+                    paired.add(prev);
+                    paired.add(n);
+                }
             }
             lastOnString.set(n.s, n);
         }
-        return out;
+        return { arcs, paired };
     }
 
     function connect(filename, arrangementIdx) {
@@ -151,6 +159,7 @@
             state.notes = [];
             state.arcs = [];
             state.techArcs = [];
+            state.techPaired = new Set();
             state.beats = [];
             state.ready = false;
 
@@ -168,7 +177,9 @@
                 if (state.ready) return;
                 state.notes.sort((a, b) => a.t - b.t);
                 state.arcs = buildTrajectories(state.notes);
-                state.techArcs = buildTechniqueArcs(state.notes);
+                const tech = buildTechniqueArcs(state.notes);
+                state.techArcs = tech.arcs;
+                state.techPaired = tech.paired;
                 state.ready = true;
                 console.log('[jumpingtab] ready —',
                     singleNotesCount, 'single notes +',
@@ -459,6 +470,79 @@
         ctx.restore();
     }
 
+    // Technique pairs — for HO/PO/slide pairs on the same string, render
+    // both notes as a single fused capsule (stadium shape) instead of two
+    // separate circles. Visually communicates "these belong together" and
+    // leaves room for the technique arc + letter above.
+    function drawTechniquePairs(W, H, nStrings, colors, now) {
+        if (!state.ready || !state.techArcs || !state.techArcs.length) return;
+        const lo = now - BEHIND;
+        const hi = now + AHEAD;
+
+        const R = 14;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = 'bold 13px "SF Mono", Menlo, monospace';
+
+        for (const a of state.techArcs) {
+            if (a.t1 < lo || a.t0 > hi) continue;
+            if (a.s < 0 || a.s >= nStrings) continue;
+
+            const x0 = timeX(a.t0, now, W);
+            const x1 = timeX(a.t1, now, W);
+            const y = yFor(a.s, H, nStrings);
+            const color = colors[a.s];
+
+            // Use the later note's time for fade so the capsule fades as
+            // a unit when it's behind the hit line.
+            let alpha = 1;
+            const dt = now - a.t1;
+            if (dt > 0) {
+                alpha = 1 - (dt / FADE_SECONDS);
+                if (alpha <= 0) continue;
+            }
+
+            ctx.save();
+            ctx.globalAlpha = alpha;
+
+            // Capsule body — stadium shape from (x0-R) to (x1+R), height 2R
+            const left = x0 - R;
+            const top = y - R;
+            const width = (x1 - x0) + 2 * R;
+            const height = 2 * R;
+
+            ctx.shadowColor = color;
+            ctx.shadowBlur = 10;
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            if (ctx.roundRect) {
+                ctx.roundRect(left, top, width, height, R);
+            } else {
+                // Fallback for very old browsers
+                ctx.moveTo(left + R, top);
+                ctx.lineTo(left + width - R, top);
+                ctx.arc(left + width - R, y, R, -Math.PI / 2, Math.PI / 2);
+                ctx.lineTo(left + R, top + height);
+                ctx.arc(left + R, y, R, Math.PI / 2, (3 * Math.PI) / 2);
+                ctx.closePath();
+            }
+            ctx.fill();
+
+            // White outline
+            ctx.shadowBlur = 0;
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+            ctx.stroke();
+
+            // Fret numbers at each end
+            ctx.fillStyle = '#0a0f1c';
+            ctx.fillText(String(a.f0), x0, y + 1);
+            ctx.fillText(String(a.f1), x1, y + 1);
+
+            ctx.restore();
+        }
+    }
+
     // Technique arcs — curves above the notes on the same string for
     // hammer-on (h), pull-off (p), or slide (s). These sit above the note
     // row as a solid curve with a small letter label, mirroring standard
@@ -584,6 +668,9 @@
         for (let i = start; i < end; i++) {
             const n = state.notes[i];
             if (n.s < 0 || n.s >= nStrings) continue;
+            // Skip notes that belong to a technique pair — they are drawn
+            // as a fused capsule by drawTechniquePairs.
+            if (state.techPaired && state.techPaired.has(n)) continue;
             const x = timeX(n.t, now, W);
             const y = yFor(n.s, H, nStrings);
             const color = colors[n.s];
@@ -635,6 +722,7 @@
         drawBackground(W, H, nStrings, colors, now);
         drawSustains(W, H, nStrings, colors, now);
         drawArcs(W, H, nStrings, colors, now);
+        drawTechniquePairs(W, H, nStrings, colors, now);
         drawTechniqueArcs(W, H, nStrings, colors, now);
         drawNotes(W, H, nStrings, colors, now);
         drawBall(W, H, nStrings, colors, now);
