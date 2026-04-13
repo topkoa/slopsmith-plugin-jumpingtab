@@ -134,6 +134,8 @@
                 if (msg.error) { reject(new Error(msg.error)); ws.close(); return; }
                 if (msg.type === 'song_info') {
                     state.tuning = msg.tuning || [0,0,0,0,0,0];
+                    const mode = state.tuning.length === 4 ? 'bass (4)' : 'guitar (6)';
+                    console.log('[jumpingtab] arrangement:', msg.arrangement, '— mode:', mode);
                 } else if (msg.type === 'notes') {
                     total = msg.total;
                     for (const n of msg.data) state.notes.push(n);
