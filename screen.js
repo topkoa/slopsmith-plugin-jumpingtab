@@ -202,6 +202,7 @@
     }
 
     function unmountCanvas() {
+        if (raf) { cancelAnimationFrame(raf); raf = null; }
         window.removeEventListener('resize', sizeCanvasToHighway);
         if (canvas) { canvas.remove(); canvas = null; ctx = null; }
         const hw = document.getElementById('highway');
@@ -261,7 +262,16 @@
             const y = stringY(n.s, H, nStrings);
             const color = colors[n.s];
 
+            // Past-note fade: once x < hitX, fade over FADE_SECONDS of real time
+            let alpha = 1;
+            const dt = now - n.t;
+            if (dt > 0) {
+                alpha = 1 - (dt / FADE_SECONDS);
+                if (alpha <= 0) continue;
+            }
+
             ctx.save();
+            ctx.globalAlpha = alpha;
             ctx.fillStyle = color;
             ctx.beginPath();
             ctx.arc(x, y, 12, 0, Math.PI * 2);
@@ -282,6 +292,13 @@
         drawNotes(W, H, nStrings, colors, now);
     }
 
+    function tick() {
+        if (!active) return;
+        const now = audioEl ? audioEl.currentTime : 0;
+        drawFrame(now);
+        raf = requestAnimationFrame(tick);
+    }
+
     // ── Toggle + button ──────────────────────────────────────
     function toggle() {
         if (!active) {
@@ -291,11 +308,13 @@
             }
             if (!mountCanvas()) return;
             active = true;
-            drawFrame(0);
+            if (raf) cancelAnimationFrame(raf);
+            tick();
             const b = document.getElementById('btn-jt');
             if (b) b.className = 'px-3 py-1.5 bg-cyan-900/50 rounded-lg text-xs text-cyan-300 transition';
         } else {
             active = false;
+            if (raf) { cancelAnimationFrame(raf); raf = null; }
             unmountCanvas();
             const b = document.getElementById('btn-jt');
             if (b) b.className = 'px-3 py-1.5 bg-dark-600 hover:bg-dark-500 rounded-lg text-xs text-gray-400 transition';
