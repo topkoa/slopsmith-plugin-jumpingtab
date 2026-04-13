@@ -94,6 +94,19 @@
         return arcs;
     }
 
+    // Map a numeric bend amount (in semitones) to the label conventionally
+    // shown in guitar tablature. 0.5 → ½, 1 → "full", 1.5 → 1½, etc.
+    function bendText(bn) {
+        if (!bn || bn <= 0) return '';
+        if (bn === 0.5) return '\u00BD';
+        if (bn === 1) return 'full';
+        if (bn === 1.5) return '1\u00BD';
+        if (bn === 2) return '2';
+        if (bn === 2.5) return '2\u00BD';
+        if (bn >= 3) return String(Math.round(bn));
+        return bn.toFixed(1);
+    }
+
     function bezierPoint(x0, y0, cx, cy, x1, y1, u) {
         const v = 1 - u;
         return {
@@ -210,8 +223,8 @@
                     // Chord events — each chord has its own time and a list of
                     // notes {s, f, sus, ...}. Expand into individual notes by
                     // promoting the chord's time onto every note. Keep the
-                    // technique flags (ho, po, sl) so drawTechniqueArcs can
-                    // find them.
+                    // technique flags (ho, po, sl, bn) so drawTechniqueArcs
+                    // and drawBends can find them.
                     for (const c of msg.data) {
                         for (const cn of c.notes) {
                             state.notes.push({
@@ -222,6 +235,7 @@
                                 ho: cn.ho || 0,
                                 po: cn.po || 0,
                                 sl: cn.sl || -1,
+                                bn: cn.bn || 0,
                             });
                             chordNotesCount++;
                         }
@@ -655,6 +669,79 @@
         ctx.restore();
     }
 
+    // Bend indicators — a bright vertical arrow above any note with bn > 0,
+    // labeled with the bend amount in standard tab notation. Rendered on
+    // top of notes (both normal fret circles and fused capsules) so it's
+    // visible regardless of which note presentation is used.
+    function drawBends(W, H, nStrings, colors, now) {
+        if (!state.ready || !state.notes.length) return;
+        const { start, end } = binaryVisibleRange(state.notes, now);
+
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.font = 'bold 11px "SF Mono", Menlo, monospace';
+
+        for (let i = start; i < end; i++) {
+            const n = state.notes[i];
+            if (!n.bn || n.bn <= 0) continue;
+            if (n.s < 0 || n.s >= nStrings) continue;
+
+            const x = timeX(n.t, now, W);
+            const y = yFor(n.s, H, nStrings);
+
+            // Fade with the note
+            let alpha = 1;
+            const dt = now - n.t;
+            if (dt > 0) {
+                alpha = 1 - (dt / FADE_SECONDS);
+                if (alpha <= 0) continue;
+            }
+
+            // Arrow geometry: starts at the top of the fret circle and
+            // points up; length scales slightly with bend amount (bigger
+            // bend = longer arrow) so half-bends and full bends look
+            // different at a glance.
+            const noteR = 14;
+            const baseY = y - noteR - 2;
+            const len = 14 + Math.min(12, n.bn * 6);
+            const tipY = baseY - len;
+            const headH = 5;
+            const headW = 4;
+
+            ctx.save();
+            ctx.globalAlpha = alpha;
+            ctx.shadowColor = '#ffd35a';
+            ctx.shadowBlur = 8;
+            ctx.strokeStyle = '#ffd35a';
+            ctx.fillStyle = '#ffd35a';
+            ctx.lineWidth = 2;
+            ctx.lineCap = 'round';
+
+            // Shaft
+            ctx.beginPath();
+            ctx.moveTo(x, baseY);
+            ctx.lineTo(x, tipY + headH);
+            ctx.stroke();
+
+            // Arrowhead (filled triangle)
+            ctx.shadowBlur = 0;
+            ctx.beginPath();
+            ctx.moveTo(x, tipY);
+            ctx.lineTo(x - headW, tipY + headH);
+            ctx.lineTo(x + headW, tipY + headH);
+            ctx.closePath();
+            ctx.fill();
+
+            // Label to the right of the tip
+            ctx.fillStyle = '#ffd35a';
+            ctx.shadowColor = '#000000';
+            ctx.shadowBlur = 3;
+            ctx.fillText(bendText(n.bn), x + headW + 3, tipY + 4);
+
+            ctx.restore();
+        }
+    }
+
     function drawNotes(W, H, nStrings, colors, now) {
         if (!state.ready || !state.notes.length) return;
         const { start, end } = binaryVisibleRange(state.notes, now);
@@ -725,6 +812,7 @@
         drawTechniquePairs(W, H, nStrings, colors, now);
         drawTechniqueArcs(W, H, nStrings, colors, now);
         drawNotes(W, H, nStrings, colors, now);
+        drawBends(W, H, nStrings, colors, now);
         drawBall(W, H, nStrings, colors, now);
     }
 
