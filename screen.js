@@ -135,7 +135,20 @@
             const ws = new WebSocket(url);
             state.ws = ws;
 
-            let total = null;
+            let singleNotesCount = 0;
+            let chordNotesCount = 0;
+
+            const finalize = () => {
+                if (state.ready) return;
+                state.notes.sort((a, b) => a.t - b.t);
+                state.arcs = buildTrajectories(state.notes);
+                state.ready = true;
+                console.log('[jumpingtab] ready —',
+                    singleNotesCount, 'single notes +',
+                    chordNotesCount, 'chord notes =',
+                    state.notes.length, 'total');
+                resolve(state);
+            };
 
             // Identity-gate all handlers: if the user picks a different song
             // before this one finishes loading, state.ws is replaced. Old
@@ -151,16 +164,27 @@
                     const mode = state.tuning.length === 4 ? 'bass (4)' : 'guitar (6)';
                     console.log('[jumpingtab] arrangement:', msg.arrangement, '— mode:', mode);
                 } else if (msg.type === 'notes') {
-                    total = msg.total;
+                    // Single (non-chord) notes
                     for (const n of msg.data) state.notes.push(n);
-                    if (!state.ready && total != null && state.notes.length >= total) {
-                        state.notes.sort((a, b) => a.t - b.t);
-                        state.arcs = buildTrajectories(state.notes);
-                        state.ready = true;
-                        resolve(state);
-                        // Leave socket open for beat/lyric messages that may trail;
-                        // close it on teardown or next playSong.
+                    singleNotesCount = state.notes.length;
+                } else if (msg.type === 'chords') {
+                    // Chord events — each chord has its own time and a list of
+                    // notes {s, f, sus, ...}. Expand into individual notes by
+                    // promoting the chord's time onto every note.
+                    for (const c of msg.data) {
+                        for (const cn of c.notes) {
+                            state.notes.push({
+                                t: c.t,
+                                s: cn.s,
+                                f: cn.f,
+                                sus: cn.sus || 0,
+                            });
+                            chordNotesCount++;
+                        }
                     }
+                } else if (msg.type === 'ready') {
+                    // Server has finished streaming notes + chords
+                    finalize();
                 }
             };
             ws.onerror = () => {
