@@ -363,7 +363,7 @@
         canvas.id = 'jumpingtab-canvas';
         canvas.style.cssText = [
             'width:100%',
-            'max-width:1400px',
+            'max-width:4000px',
             'height:min(42vh, 360px)',
             'display:block',
             'background:#0f1420',
