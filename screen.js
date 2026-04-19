@@ -520,24 +520,6 @@
             ctx.stroke();
         }
 
-        // String labels on the left gutter
-        ctx.font = 'bold 12px "SF Mono", Menlo, monospace';
-        ctx.textBaseline = 'middle';
-        ctx.textAlign = 'center';
-        const labels = nStrings === 4 ? ['E','A','D','G'] : ['E','A','D','G','B','e'];
-        for (let s = 0; s < nStrings; s++) {
-            const y = yFor(s, H, nStrings);
-            ctx.fillStyle = 'rgba(15, 20, 32, 0.88)';
-            ctx.beginPath();
-            ctx.arc(16, y, 10, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.strokeStyle = colors[s] + '80';
-            ctx.lineWidth = 1.5;
-            ctx.stroke();
-            ctx.fillStyle = colors[s];
-            ctx.fillText(labels[s], 16, y + 0.5);
-        }
-
         // Hit line — crisp bright line in the middle of the zone
         ctx.save();
         ctx.shadowColor = '#6ee7ff';
@@ -554,6 +536,25 @@
     // Edge fade — draw dark gradients at the left and right edges so notes
     // don't pop in/out. Called AFTER notes so it overlays everything in
     // the lane area.
+    function drawStringLabels(W, H, nStrings, colors) {
+        ctx.font = 'bold 12px "SF Mono", Menlo, monospace';
+        ctx.textBaseline = 'middle';
+        ctx.textAlign = 'center';
+        const labels = nStrings === 4 ? ['E','A','D','G'] : ['E','A','D','G','B','e'];
+        for (let s = 0; s < nStrings; s++) {
+            const y = yFor(s, H, nStrings);
+            ctx.fillStyle = 'rgba(15, 20, 32, 0.88)';
+            ctx.beginPath();
+            ctx.arc(16, y, 10, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = colors[s] + '80';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+            ctx.fillStyle = colors[s];
+            ctx.fillText(labels[s], 16, y + 0.5);
+        }
+    }
+
     function drawEdgeFade(W, H) {
         const topBand = TOP_PAD;
         const botBand = H - BOTTOM_PAD;
@@ -1421,7 +1422,7 @@
         }
         if (activeIndex < 0) activeIndex = 0;
         const activeChord = unique[activeIndex];
-        const otherChords = unique.filter((_, idx) => idx !== activeIndex);
+        const otherChords = unique.filter((_, idx) => idx !== activeIndex).reverse();
 
         const renderChordBox = (ch, isCurrent) => {
             const x = isCurrent ? hitX : timeX(ch.t, now, W);
@@ -1451,26 +1452,28 @@
             const boxTop = 12;
 
             const dt = now - ch.t;
-            let alpha = 0.55;
-            if (ch === activeChord) {
-                alpha = 1;
-            } else if (dt > 0) {
-                alpha = Math.max(0, 1 - (dt / BEHIND));
-            }
+            const approach = dt < 0
+                ? 1 - Math.min(-dt, AHEAD) / AHEAD
+                : Math.max(0, 1 - Math.min(dt, BEHIND) / BEHIND);
+
+            const fillColor = isCurrent ? 'rgba(20, 30, 45, 1)' : 'rgba(18, 24, 34, 1)';
+            const strokeColor = isCurrent
+                ? 'rgba(110, 231, 255, 0.45)'
+                : `rgba(140, 180, 230, ${0.18 + 0.2 * approach})`;
+            const textColor = isCurrent
+                ? '#ffffff'
+                : `rgba(210, 220, 230, ${0.82 + 0.18 * approach})`;
 
             chordCtx.save();
-            chordCtx.globalAlpha = alpha;
-            chordCtx.fillStyle = isCurrent ? 'rgba(20, 30, 45, 0.98)' : 'rgba(14, 20, 32, 0.75)';
+            chordCtx.fillStyle = fillColor;
             roundRect(chordCtx, boxLeft - 8, boxTop - 8, diagWidth + 16, H - 16, 12);
             chordCtx.fill();
 
-            if (isCurrent) {
-                chordCtx.strokeStyle = 'rgba(110, 231, 255, 0.4)';
-                chordCtx.lineWidth = 2;
-                chordCtx.stroke();
-            }
+            chordCtx.strokeStyle = strokeColor;
+            chordCtx.lineWidth = isCurrent ? 2 : 1.4;
+            chordCtx.stroke();
 
-            chordCtx.fillStyle = isCurrent ? '#ffffff' : 'rgba(200, 210, 230, 0.8)';
+            chordCtx.fillStyle = textColor;
             chordCtx.font = `${isCurrent ? 'bold ' : ''}14px "SF Mono", monospace`;
             chordCtx.textAlign = 'center';
             chordCtx.textBaseline = 'top';
@@ -1579,6 +1582,7 @@
         drawImpacts(W, H, nStrings, colors, now);
         drawBall(W, H, nStrings, colors, now);
         drawEdgeFade(W, H);
+        drawStringLabels(W, H, nStrings, colors);
         drawHeader(W, H, now);
         drawProgress(W, H, now);
     }
