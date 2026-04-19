@@ -341,7 +341,7 @@
         if (!noteCanvas || !noteCtx || !chordCanvas || !chordCtx) return;
         const noteRect = noteCanvas.getBoundingClientRect();
         const chordRect = chordCanvas.getBoundingClientRect();
-        const dpr = window.devicePixelRatio || 1;
+        const dpr = (window.devicePixelRatio || 1) * 1.35;
 
         const notePxW = Math.max(1, Math.floor(noteRect.width * dpr));
         const notePxH = Math.max(1, Math.floor(noteRect.height * dpr));
@@ -373,20 +373,20 @@
             'min-height:0',
             'display:flex',
             'flex-direction:column',
-            'align-items:center',
-            'justify-content:center',
-            'padding:0 24px',
+            'align-items:stretch',
+            'justify-content:flex-start',
+            'padding:0',
             'gap:12px',
-            'width:95%',
-            'height:95%',
-            'margin:0 auto',
+            'width:100%',
+            'max-width:none',
+            'height:100%',
+            'box-sizing:border-box',
         ].join(';');
 
         chordCanvas = document.createElement('canvas');
         chordCanvas.id = 'jumpingtab-chord-canvas';
         chordCanvas.style.cssText = [
             'width:100%',
-            'max-width:1400px',
             'flex:0.35',
             'min-height:0',
             'display:block',
@@ -399,7 +399,6 @@
         noteCanvas.id = 'jumpingtab-canvas';
         noteCanvas.style.cssText = [
             'width:100%',
-            'max-width:1400px',
             'flex:0.65',
             'min-height:0',
             'display:block',
@@ -1660,7 +1659,7 @@
             chordCanvas = null;
             noteCtx = cnv.getContext('2d');
             ctx = noteCtx;
-            const dpr = window.devicePixelRatio || 1;
+            const dpr = (window.devicePixelRatio || 1) * 1.35;
             const rect = cnv.getBoundingClientRect();
             cnv.width = Math.max(1, Math.floor(rect.width * dpr));
             cnv.height = Math.max(1, Math.floor(rect.height * dpr));
