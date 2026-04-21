@@ -1320,5 +1320,151 @@
             });
     };
 
+    // ── Context-swap helpers for multi-instance rendering ───
+    function _swapRenderTarget(newCanvas, newCtx, newState) {
+        const saved = { canvas, ctx, stateSnap: { ...state } };
+        canvas = newCanvas;
+        ctx = newCtx;
+        Object.assign(state, newState);
+        return saved;
+    }
+    function _restoreRenderTarget(saved) {
+        canvas = saved.canvas;
+        ctx = saved.ctx;
+        Object.assign(state, saved.stateSnap);
+    }
+
+    // ── Factory for splitscreen panes ────────────────────────
+    window.createJumpingTabPane = function ({ container }) {
+        const localCanvas = document.createElement('canvas');
+        localCanvas.style.cssText = 'width:100%;height:100%;display:block;background:#0f1420;';
+        container.appendChild(localCanvas);
+        const localCtx = localCanvas.getContext('2d');
+
+        const localState = {
+            filename: null, tuning: null, notes: [], arcs: [],
+            techArcs: [], techPaired: new Set(), beats: [],
+            sections: [], songInfo: {}, ready: false, ws: null,
+        };
+        let localRaf = null;
+        let destroyed = false;
+
+        function sizeLocal() {
+            if (!localCanvas || !localCtx) return;
+            const rect = localCanvas.getBoundingClientRect();
+            const dpr = window.devicePixelRatio || 1;
+            const pxW = Math.max(1, Math.floor(rect.width * dpr));
+            const pxH = Math.max(1, Math.floor(rect.height * dpr));
+            if (localCanvas.width !== pxW || localCanvas.height !== pxH) {
+                localCanvas.width = pxW;
+                localCanvas.height = pxH;
+            }
+            localCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        }
+
+        function localTick() {
+            if (destroyed) return;
+            const audioEl = document.getElementById('audio');
+            const now = audioEl ? audioEl.currentTime : 0;
+            sizeLocal();
+            const saved = _swapRenderTarget(localCanvas, localCtx, localState);
+            drawFrame(now);
+            _restoreRenderTarget(saved);
+            localRaf = requestAnimationFrame(localTick);
+        }
+
+        function localConnect(filename, arrangementIdx) {
+            return new Promise((resolve, reject) => {
+                if (localState.ws) { try { localState.ws.close(); } catch (_) {} localState.ws = null; }
+                localState.filename = filename;
+                localState.tuning = null;
+                localState.notes = [];
+                localState.arcs = [];
+                localState.techArcs = [];
+                localState.techPaired = new Set();
+                localState.beats = [];
+                localState.sections = [];
+                localState.songInfo = {};
+                localState.ready = false;
+
+                const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const qs = (arrangementIdx != null && arrangementIdx >= 0)
+                    ? `?arrangement=${arrangementIdx}` : '';
+                const url = `${proto}//${location.host}/ws/highway/${encodeURIComponent(filename)}${qs}`;
+                const ws = new WebSocket(url);
+                localState.ws = ws;
+
+                const finalize = () => {
+                    if (localState.ready) return;
+                    localState.notes.sort((a, b) => a.t - b.t);
+                    const lastIdxByString = new Map();
+                    const EPS_T = 1e-4;
+                    for (let i = 0; i < localState.notes.length; i++) {
+                        const n = localState.notes[i];
+                        n._gapL = Infinity;
+                        n._gapR = Infinity;
+                        const prevIdx = lastIdxByString.get(n.s);
+                        if (prevIdx != null) {
+                            const prev = localState.notes[prevIdx];
+                            const gap = n.t - prev.t;
+                            if (gap > EPS_T) {
+                                n._gapL = gap;
+                                if (gap < prev._gapR) prev._gapR = gap;
+                            }
+                        }
+                        lastIdxByString.set(n.s, i);
+                    }
+                    localState.arcs = buildTrajectories(localState.notes);
+                    const tech = buildTechniqueArcs(localState.notes);
+                    localState.techArcs = tech.arcs;
+                    localState.techPaired = tech.paired;
+                    localState.ready = true;
+                    if (!destroyed) { sizeLocal(); localTick(); }
+                    resolve(localState);
+                };
+
+                ws.onmessage = (ev) => {
+                    if (localState.ws !== ws) return;
+                    let msg;
+                    try { msg = JSON.parse(ev.data); } catch (_) { return; }
+                    if (msg.error) { reject(new Error(msg.error)); ws.close(); return; }
+                    if (msg.type === 'song_info') {
+                        localState.tuning = msg.tuning || [0,0,0,0,0,0];
+                        localState.songInfo = { title: msg.title || '', artist: msg.artist || '', arrangement: msg.arrangement || '', duration: msg.duration || 0 };
+                    } else if (msg.type === 'sections') {
+                        localState.sections = msg.data || [];
+                    } else if (msg.type === 'notes') {
+                        for (const n of msg.data) localState.notes.push(n);
+                    } else if (msg.type === 'chords') {
+                        for (const c of msg.data) {
+                            for (const cn of c.notes) {
+                                localState.notes.push({ t: c.t, s: cn.s, f: cn.f, sus: cn.sus || 0, ho: cn.ho || 0, po: cn.po || 0, sl: cn.sl || -1, bn: cn.bn || 0 });
+                            }
+                        }
+                    } else if (msg.type === 'beats') {
+                        localState.beats = msg.data || [];
+                    } else if (msg.type === 'ready') {
+                        finalize();
+                    }
+                };
+                ws.onerror = () => { if (localState.ws === ws && !localState.ready) reject(new Error('ws error')); };
+                ws.onclose = () => { if (localState.ws === ws && !localState.ready) reject(new Error('ws closed before ready')); };
+            });
+        }
+
+        sizeLocal();
+
+        return {
+            connect: localConnect,
+            destroy() {
+                destroyed = true;
+                if (localRaf) { cancelAnimationFrame(localRaf); localRaf = null; }
+                if (localState.ws) { try { localState.ws.close(); } catch (_) {} localState.ws = null; }
+                if (localCanvas.parentNode) localCanvas.remove();
+            },
+            resize: sizeLocal,
+        };
+    };
+
     console.log('[jumpingtab] plugin loaded');
 })();
